@@ -79,7 +79,8 @@ module Control_path_best_rafa_mejora_correlacion_autoshunt
   //assign ciclos=(incrementado<32'h00eeb476)?0:(incrementado<32'h0176d603)?1:(incrementado<32'h02004b62)?2:3;
 assign diferencia=ADC_A-ADC_B;
   assign ciclos=num_ciclos;
-  assign repeticiones=test3?numero_rep:225; //numero de puntos que tenemos
+  //assign repeticiones=test3?numero_rep:225; //numero de puntos que tenemos
+  assign repeticiones=numero_rep; //numero de puntos que tenemos
   //assign ancho_detector=test3?anchura_variable:pancho_detector;
   // assign ancho_detector=pancho_detector;
   //assign paso=test3?{{5{1'b0}},salto}:8'b00000001;

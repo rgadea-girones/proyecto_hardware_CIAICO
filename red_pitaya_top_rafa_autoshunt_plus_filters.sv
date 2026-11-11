@@ -376,28 +376,20 @@ assign adc_clk_o = 2'b10;
 assign adc_cdcs_o = 1'b1 ;
 
 logic [2-1:0] [14-1:0] adc_dat_raw;
+wire  [2-1:0] [14-1:0] adc_dat_dly;  // datos ADC tras IDELAY (ver bloque IDELAY más abajo)
 
 // IO block registers should be used here
 // lowest 2 bits reserved for 16bit ADC
-//atencion cambio rgadea julio de 2026 para evitar  problemas de timing
-//version antigua
-/*
 always @(posedge adc_clk)
 begin
-  adc_dat_raw[0] <= adc_dat_i[0][16-1:2];
-  adc_dat_raw[1] <= adc_dat_i[1][16-1:2];
+  adc_dat_raw[0] <= adc_dat_dly[0];
+  adc_dat_raw[1] <= adc_dat_dly[1];
 end
     
 // transform into 2's complement (negative slope)
 assign adc_dat[0] = digital_loop ? dac_a : {adc_dat_raw[0][14-1], ~adc_dat_raw[0][14-2:0]};
 assign adc_dat[1] = digital_loop ? dac_b : {adc_dat_raw[1][14-1], ~adc_dat_raw[1][14-2:0]};
-*/
-always @(posedge adc_clk)
-begin
-  adc_dat[0] <= {adc_dat_i[0][16-1],~adc_dat_i[0][16-2:2]};
-  adc_dat[1] <= {adc_dat_i[1][16-1],~adc_dat_i[1][16-2:2]};
-end
-//nueva version
+
 ////////////////////////////////////////////////////////////////////////////////
 // DAC IO
 ////////////////////////////////////////////////////////////////////////////////
@@ -439,6 +431,9 @@ wire [2:0] aire;
 
 wire [3:0] aire2;
 
+logic finalizado; //antes led_o_int[7]
+
+
 red_pitaya_hk i_hk (
   // system signals
   .clk_i           (adc_clk ),  // clock
@@ -448,7 +443,7 @@ red_pitaya_hk i_hk (
   // global configuration
   .digital_loop    (digital_loop),
   // Expansion connector
-  .exp_p_dat_i     ({led_o_int[7],exp_p_in[6:0]}  ),  // input data
+  .exp_p_dat_i     ({finalizado,exp_p_in[6:0]}  ),  // input data
   .exp_p_dat_o     (exp_p_out),  // output data
   .exp_p_dir_o     (exp_p_dir),  // 1-output enable
   .exp_n_dat_i     (exp_n_in ),
@@ -474,12 +469,15 @@ red_pitaya_hk i_hk (
 // wire fin;
 
 always_comb
+if (led_o[3])
+exp_n_out[3:0]=aire2; //proviene del software
+else //authoshunt activado gobrnado por hardware , que es opcion por defecto en aplicacion python 
 case (control_shunt)
-  3'b000: exp_n_out[3:0] = 4'b0001;  //1000
-  3'b001: exp_n_out[3:0] = 4'b0010;  //1000
-  3'b010: exp_n_out[3:0] = 4'b0100;  //1000
-  3'b011: exp_n_out[3:0] = 4'b1011;  //1100
-  default: exp_n_out[3:0] = 4'b1010;  //0110
+  3'b000: exp_n_out[3:0] = 4'b0001;
+  3'b001: exp_n_out[3:0] = 4'b0010;
+  3'b010: exp_n_out[3:0] = 4'b0100;
+  3'b011: exp_n_out[3:0] = 4'b1011;
+  default: exp_n_out[3:0] = 4'b1010;
 endcase
 
 IOBUF i_iobufp [8-1:0] (.O(exp_p_in), .IO(exp_p_io), .I(exp_p_out), .T(~exp_p_dir) );
@@ -546,9 +544,9 @@ red_pitaya_asg_rafa_autoshunt_plus_filter i_asg (
   .trig_a_i        (gpio.i[8]   ),
   .trig_b_i        (gpio.i[8]   ),
   .trig_out_o      (trig_asg_out),
-  .fina            (led_o_int[7]),
+  .fina            (finalizado),
   .estado_pasos_cero(control_shunt),
-  //.estado_pasos_cero_dly(led_o_int[6:4]),
+  .estado_pasos_cero_dly(led_o[7:5]),
   //nuevas incorporaciones
   .modulo(modulo),
   .fase(fase),
@@ -602,6 +600,42 @@ red_pitaya_pid i_pid (
 
 wire daisy_rx_rdy ;
 wire dly_clk = fclk[3]; // 200MHz clock from PS - used for IDELAY (optionaly)
+
+// IDELAY fijo en las entradas del ADC para cumplir el hold (input delay de 3.4 ns vs latencia del reloj)
+wire idelay_rdy;
+IDELAYCTRL i_idelayctrl (.REFCLK(dly_clk), .RST(~frstn[0]), .RDY(idelay_rdy));
+
+for (genvar ch = 0; ch < 2; ch++) begin : g_adc_idelay_ch
+  for (genvar b = 0; b < 14; b++) begin : g_adc_idelay_bit
+    wire ibuf_o;
+    wire idelay_o;
+    IBUF i_ibuf (.I(adc_dat_i[ch][b+2]), .O(ibuf_o));
+    IDELAYE2 #(
+      .IDELAY_TYPE          ("FIXED"  ),
+      .DELAY_SRC            ("IDATAIN"),
+      .IDELAY_VALUE         ( 31      ),  // 31 taps x ~78 ps a 200 MHz
+      .REFCLK_FREQUENCY     ( 200.0   ),
+      .HIGH_PERFORMANCE_MODE("TRUE"   ),
+      .SIGNAL_PATTERN       ("DATA"   ),
+      .CINVCTRL_SEL         ("FALSE"  ),
+      .PIPE_SEL             ("FALSE"  )
+    ) i_idelay (
+      .C          (1'b0    ),
+      .REGRST     (1'b0    ),
+      .LD         (1'b0    ),
+      .CE         (1'b0    ),
+      .INC        (1'b0    ),
+      .CINVCTRL   (1'b0    ),
+      .CNTVALUEIN (5'd0    ),
+      .LDPIPEEN   (1'b0    ),
+      .IDATAIN    (ibuf_o  ),
+      .DATAIN     (1'b0    ),
+      .DATAOUT    (idelay_o),
+      .CNTVALUEOUT()
+    );
+    assign adc_dat_dly[ch][b] = idelay_o;
+  end
+end
 
 red_pitaya_daisy i_daisy (
    // SATA connector
